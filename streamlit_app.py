@@ -11,6 +11,11 @@ BACKEND_URL = "http://localhost:5000"
 # Initialize session state containers
 if "prs" not in st.session_state:
 	st.session_state["prs"] = []  # list of dicts: owner, repo, number, title, state, url, raw
+# add view state initialization
+if "view" not in st.session_state:
+	st.session_state["view"] = "form"
+if "current_repo" not in st.session_state:
+	st.session_state["current_repo"] = None
 
 def add_pr_to_session(pr_info):
 	# Normalize and append
@@ -71,6 +76,60 @@ def show_pr_table():
 	if cols[1].button("Clear PRs"):
 		st.session_state["prs"] = []
 		return  # let Streamlit re-run naturally
+
+def show_repo_prs():
+	st.title("Repository Pull Requests")
+	repo = st.session_state.get("current_repo")
+	if not repo:
+		st.error("No repository selected.")
+		if st.button("Back"):
+			st.session_state["view"] = "form"
+			return
+		return
+
+	st.write(f"Showing PRs for: {repo}")
+	cols = st.columns([1,1,1])
+	if cols[0].button("Refresh PR list"):
+		st.session_state.pop("repo_prs_cache", None)  # force refresh
+	if cols[1].button("Back to form"):
+		st.session_state["view"] = "form"
+		return
+
+	# cached fetch to avoid repeated calls per render
+	if "repo_prs_cache" not in st.session_state:
+		try:
+			resp = requests.get(f"{BACKEND_URL}/list_prs", params={"repo": repo, "state": "all"}, timeout=10)
+			if resp.status_code == 200:
+				j = resp.json()
+				st.session_state["repo_prs_cache"] = j.get("prs", [])
+			else:
+				try:
+					err = resp.json()
+				except Exception:
+					err = resp.text
+				st.error(f"Failed to fetch PRs ({resp.status_code}): {err}")
+				st.session_state["repo_prs_cache"] = []
+		except Exception as e:
+			st.error(f"Failed to call backend: {e}")
+			st.session_state["repo_prs_cache"] = []
+
+	prs = st.session_state.get("repo_prs_cache", [])
+	if not prs:
+		st.info("No pull requests found for this repository.")
+		return
+
+	# display PRs as a table
+	rows = []
+	for p in prs:
+		rows.append({
+			"number": p.get("number"),
+			"title": p.get("title"),
+			"state": p.get("state"),
+			"head": p.get("head"),
+			"base": p.get("base"),
+			"url": p.get("url")
+		})
+	st.table(rows)
 
 def show_form():
 	st.title("Create GitHub Pull Request")
@@ -136,6 +195,10 @@ def show_form():
 						}
 						add_pr_to_session(pr_entry)
 						st.success("Pull request created and added to session table.")
+						# navigate to repo PRs view
+						st.session_state["current_repo"] = payload["repo"]
+						st.session_state["view"] = "repo_prs"
+						return
 					else:
 						# Better error display for GitHub validation errors (e.g., base branch invalid)
 						try:
@@ -163,4 +226,10 @@ def show_form():
 			return  # let Streamlit re-run naturally after submit
 
 # Main view — always show form (session state updates will refresh the page)
-show_form()
+if st.session_state["view"] == "form":
+	show_form()
+elif st.session_state["view"] == "repo_prs":
+	show_repo_prs()
+else:
+	st.session_state["view"] = "form"
+	show_form()

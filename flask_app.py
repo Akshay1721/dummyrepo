@@ -144,6 +144,65 @@ def pr_status():
 	except Exception as e:
 		return jsonify(error=str(e)), 500
 
+@app.route("/list_prs", methods=["GET"])
+def list_prs():
+	try:
+		repo = request.args.get("repo")
+		state = request.args.get("state", "all")  # open, closed, all
+		if not repo:
+			return jsonify(error="Missing query parameter 'repo'"), 400
+		if "/" not in repo:
+			return jsonify(error="repo must be in the form 'owner/repo'"), 400
+
+		# token retrieval (reuse existing logic)
+		token = os.environ.get("GITHUB_TOKEN")
+		if not token and dotenv_path.exists():
+			try:
+				with dotenv_path.open("r", encoding="utf-8") as fh:
+					for raw in fh:
+						line = raw.strip()
+						if not line or line.startswith("#"):
+							continue
+						if "=" in line:
+							k, v = line.split("=", 1)
+							if k.strip() == "GITHUB_TOKEN":
+								token = v.strip().strip('\'"')
+								break
+			except Exception:
+				pass
+
+		if not token:
+			return jsonify(error="GITHUB_TOKEN not set in environment. Set GITHUB_TOKEN env var or add it to a .env in the repo root."), 500
+
+		owner, repo_name = repo.split("/", 1)
+		url = f"{GITHUB_API}/repos/{owner}/{repo_name}/pulls"
+		headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+		params = {"state": state, "per_page": 100}
+		resp = requests.get(url, headers=headers, params=params, timeout=10)
+		if resp.status_code == 200:
+			j = resp.json()
+			# summarize PRs for frontend
+			prs = []
+			for p in j:
+				prs.append({
+					"number": p.get("number"),
+					"title": p.get("title"),
+					"state": p.get("state"),
+					"url": p.get("html_url"),
+					"head": p.get("head", {}).get("ref"),
+					"base": p.get("base", {}).get("ref"),
+					"user": p.get("user", {}).get("login")
+				})
+			return jsonify(status="ok", owner=owner, repo=repo_name, prs=prs)
+		else:
+			try:
+				err = resp.json()
+			except Exception:
+				err = resp.text
+			return jsonify(error="GitHub API error", details=err), resp.status_code
+	except Exception as e:
+		return jsonify(error=str(e)), 500
+
 if __name__ == "__main__":
 	# For local development only. Use a proper WSGI server for production.
 	app.run(host="0.0.0.0", port=5000, debug=True)
